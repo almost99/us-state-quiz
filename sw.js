@@ -2,7 +2,7 @@
 // Cache-first for app assets so the app loads instantly and works offline
 // after first visit.
 
-const CACHE_NAME = 'state-quest-v1.1';
+const CACHE_NAME = 'state-quest-v1.1.1';
 const APP_SHELL = [
   './',
   './index.html',
