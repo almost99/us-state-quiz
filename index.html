@@ -740,16 +740,24 @@
   const TOTAL = STATES.length;
 
   const state = {
-    weights: {}, misses: {}, consecCorrect: {},
+    deck: [], deckIdx: 0, wrongCodes: new Set(), isRetestRound: false,
     correct: 0, wrong: 0, streak: 0, bestStreak: 0,
-    asked: 0, currentCode: null, currentIsRetry: false,
-    locked: false
+    currentCode: null, locked: false
   };
-  STATES.forEach(s => {
-    state.weights[s.code] = 1.0;
-    state.misses[s.code] = 0;
-    state.consecCorrect[s.code] = 0;
-  });
+
+  function shuffle(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function buildDeck(codes) {
+    state.deck = shuffle(codes);
+    state.deckIdx = 0;
+  }
 
   const $promptState = document.getElementById('prompt-state');
   const $promptEyebrow = document.getElementById('prompt-eyebrow');
@@ -1086,48 +1094,36 @@
   // ============================================================
   //                    QUIZ LOGIC
   // ============================================================
-  function pickNextState() {
-    let candidates = STATES.filter(s => s.code !== state.currentCode);
-    if (candidates.length === 0) candidates = STATES;
-    const total = candidates.reduce((sum, s) => sum + state.weights[s.code], 0);
-    let r = Math.random() * total;
-    for (const s of candidates) {
-      r -= state.weights[s.code];
-      if (r <= 0) return s;
-    }
-    return candidates[candidates.length - 1];
+  function isDeckDone() {
+    return state.deckIdx >= state.deck.length;
   }
 
   function renderStats() {
     $statCorrect.textContent = state.correct;
     $statWrong.textContent = state.wrong;
     $statStreak.textContent = state.streak;
-    const masteredCount = STATES.filter(s => state.consecCorrect[s.code] >= 1).length;
-    $progressBar.style.width = ((masteredCount / TOTAL) * 100) + '%';
+    const answered = Math.min(state.deckIdx, state.deck.length);
+    $progressBar.style.width = state.deck.length > 0
+      ? ((answered / state.deck.length) * 100) + '%'
+      : '0%';
   }
 
   function showRetryBadge(show) { $retryBadge.classList.toggle('show', show); }
 
   function presentNextQuestion() {
-    if (allMastered()) { showResults(true); return; }
-    // Clear any lingering reveal from the previous wrong answer
+    if (isDeckDone()) { showResults(); return; }
     clearReveal();
-    const next = pickNextState();
+    const code = state.deck[state.deckIdx++];
+    const next = STATES.find(s => s.code === code);
     state.currentCode = next.code;
-    state.currentIsRetry = state.misses[next.code] > 0;
-    state.asked++;
     $promptState.style.opacity = '0';
     setTimeout(() => {
       $promptState.textContent = next.name;
       $promptState.style.opacity = '1';
-      $promptEyebrow.textContent = state.currentIsRetry ? 'Find this one' : 'Tap on the map';
-      showRetryBadge(state.currentIsRetry);
+      $promptEyebrow.textContent = state.isRetestRound ? 'Find this one' : 'Tap on the map';
+      showRetryBadge(state.isRetestRound);
     }, 180);
     state.locked = false;
-  }
-
-  function allMastered() {
-    return STATES.every(s => state.consecCorrect[s.code] >= 2);
   }
 
   const POSITIVE_EMOJIS = ['🎉','⭐','✨','🌟','💫','🏆','🎯','👏'];
@@ -1175,13 +1171,6 @@
     state.correct++;
     state.streak++;
     state.bestStreak = Math.max(state.bestStreak, state.streak);
-    state.consecCorrect[state.currentCode]++;
-    const masteryLevel = state.consecCorrect[state.currentCode];
-    if (masteryLevel >= 2) {
-      state.weights[state.currentCode] = 0.15;
-    } else {
-      state.weights[state.currentCode] = Math.max(0.4, state.weights[state.currentCode] * 0.6);
-    }
     target.classList.add('flash-correct');
     setTimeout(() => {
       target.classList.remove('flash-correct');
@@ -1195,19 +1184,13 @@
     showBurst(clientX, clientY, emoji);
     haptic(30);
     renderStats();
-    if (allMastered()) {
-      setTimeout(() => showResults(true), 900);
-      return;
-    }
     setTimeout(presentNextQuestion, 850);
   }
 
   function handleWrong(target, correctCode, clientX, clientY) {
     state.wrong++;
     state.streak = 0;
-    state.misses[correctCode]++;
-    state.consecCorrect[correctCode] = 0;
-    state.weights[correctCode] = Math.min(8.0, state.weights[correctCode] * 3.0 + 1.0);
+    state.wrongCodes.add(correctCode);
 
     // Brief red flash on her wrong tap
     target.classList.add('flash-wrong');
@@ -1341,23 +1324,23 @@
   // ============================================================
   //                    MENU / RESULTS
   // ============================================================
-  function showResults(isComplete) {
+  function showResults() {
     const accuracy = state.correct + state.wrong > 0
       ? Math.round((state.correct / (state.correct + state.wrong)) * 100) : 0;
-    const trouble = STATES
-      .filter(s => state.misses[s.code] > 0)
-      .sort((a, b) => state.misses[b.code] - state.misses[a.code])
-      .slice(0, 8);
-    const title = isComplete ? 'You did it, Olivia!' : 'How are you doing?';
-    const sub = isComplete ? 'You found every state on the map. Amazing work!' : "Keep going — you're getting it!";
-    let troubleHtml = '';
-    if (trouble.length) {
-      troubleHtml = `
-        <div class="trouble-list">
-          <h3>States to practice</h3>
-          <ul>${trouble.map(s => `<li>${s.name}<span class="miss-count">missed ${state.misses[s.code]}×</span></li>`).join('')}</ul>
-        </div>`;
-    }
+    const missedStates = [...state.wrongCodes].map(code => STATES.find(s => s.code === code)).filter(Boolean);
+    const allPerfect = missedStates.length === 0;
+    const title = allPerfect ? 'You did it, Olivia!' : 'Round complete!';
+    const sub = allPerfect
+      ? 'You got every state right. Amazing work!'
+      : `You missed ${missedStates.length} state${missedStates.length !== 1 ? 's' : ''} — want to practice them?`;
+    const troubleHtml = missedStates.length ? `
+      <div class="trouble-list">
+        <h3>States to practice</h3>
+        <ul>${missedStates.map(s => `<li>${s.name}</li>`).join('')}</ul>
+      </div>` : '';
+    const retestBtn = missedStates.length
+      ? `<button class="btn btn-primary" id="btn-retest">Practice Missed (${missedStates.length})</button>`
+      : '';
     $modalContent.innerHTML = `
       <h2>${title}</h2>
       <div class="sub">${sub}</div>
@@ -1367,30 +1350,61 @@
         <div class="modal-stat"><div class="modal-stat-num">${state.bestStreak}</div><div class="modal-stat-label">Best Streak</div></div>
       </div>
       ${troubleHtml}
-      ${isComplete
-        ? '<button class="btn btn-primary" id="btn-restart">Play Again</button>'
-        : '<button class="btn btn-primary" id="btn-resume">Keep Practicing</button><button class="btn btn-primary" id="btn-restart" style="background:var(--rose-deep);box-shadow:0 4px 0 #8a2929;">Start Over</button>'}
-      <button class="btn btn-secondary" id="btn-close">${isComplete ? '' : 'Close'}</button>
+      ${retestBtn}
+      <button class="btn btn-primary" id="btn-restart" style="background:var(--rose-deep);box-shadow:0 4px 0 #8a2929;">Start Over</button>
     `;
     $modal.classList.add('show');
-    const $resume = document.getElementById('btn-resume');
+    const $retest = document.getElementById('btn-retest');
     const $restart = document.getElementById('btn-restart');
-    const $close = document.getElementById('btn-close');
-    if ($resume) $resume.addEventListener('click', () => $modal.classList.remove('show'));
+    if ($retest) $retest.addEventListener('click', retestMissed);
     if ($restart) $restart.addEventListener('click', restart);
-    if ($close) $close.addEventListener('click', () => $modal.classList.remove('show'));
+  }
+
+  function retestMissed() {
+    const missed = [...state.wrongCodes];
+    state.wrongCodes = new Set();
+    state.isRetestRound = true;
+    state.streak = 0;
+    state.currentCode = null;
+    state.locked = false;
+    missed.forEach(code => {
+      const el = document.getElementById('s-' + code);
+      if (el) el.classList.remove('locked-correct');
+    });
+    buildDeck(missed);
+    resetZoom();
+    $modal.classList.remove('show');
+    renderStats();
+    presentNextQuestion();
+  }
+
+  function showMenu() {
+    const accuracy = state.correct + state.wrong > 0
+      ? Math.round((state.correct / (state.correct + state.wrong)) * 100) : 0;
+    $modalContent.innerHTML = `
+      <h2>How are you doing?</h2>
+      <div class="sub">${state.deckIdx} of ${state.deck.length} states asked</div>
+      <div class="modal-stats">
+        <div class="modal-stat"><div class="modal-stat-num">${state.correct}</div><div class="modal-stat-label">Correct</div></div>
+        <div class="modal-stat"><div class="modal-stat-num">${accuracy}%</div><div class="modal-stat-label">Accuracy</div></div>
+        <div class="modal-stat"><div class="modal-stat-num">${state.streak}</div><div class="modal-stat-label">Streak</div></div>
+      </div>
+      <button class="btn btn-primary" id="btn-resume">Keep Playing</button>
+      <button class="btn btn-primary" id="btn-restart" style="background:var(--rose-deep);box-shadow:0 4px 0 #8a2929;">Start Over</button>
+    `;
+    $modal.classList.add('show');
+    document.getElementById('btn-resume').addEventListener('click', () => $modal.classList.remove('show'));
+    document.getElementById('btn-restart').addEventListener('click', restart);
   }
 
   function restart() {
-    STATES.forEach(s => {
-      state.weights[s.code] = 1.0;
-      state.misses[s.code] = 0;
-      state.consecCorrect[s.code] = 0;
-    });
+    state.wrongCodes = new Set();
+    state.isRetestRound = false;
     state.correct = 0; state.wrong = 0; state.streak = 0;
-    state.bestStreak = 0; state.asked = 0;
+    state.bestStreak = 0;
     state.currentCode = null; state.locked = false;
     document.querySelectorAll('.state.locked-correct').forEach(el => el.classList.remove('locked-correct'));
+    buildDeck(STATES.map(s => s.code));
     resetZoom();
     $modal.classList.remove('show');
     renderStats();
@@ -1407,7 +1421,7 @@
           <li>📍 A state name appears on the side.</li>
           <li>👆 Tap that state on the map.</li>
           <li>🤏 Pinch to zoom · drag to pan (or use the +/− buttons).</li>
-          <li>🔁 Missed ones come back so you really learn them.</li>
+          <li>🔁 At the end, practice any states you missed.</li>
           <li>📱 Turn your phone sideways for the best view!</li>
         </ul>
         <button class="btn btn-primary" id="btn-start">Let's Go!</button>
@@ -1415,12 +1429,13 @@
     `;
     $modal.classList.add('show');
     document.getElementById('btn-start').addEventListener('click', () => {
+      buildDeck(STATES.map(s => s.code));
       $modal.classList.remove('show');
       presentNextQuestion();
     });
   }
 
-  $menuBtn.addEventListener('click', () => showResults(false));
+  $menuBtn.addEventListener('click', () => isDeckDone() ? showResults() : showMenu());
   $modal.addEventListener('click', (e) => {
     if (e.target === $modal) $modal.classList.remove('show');
   });
